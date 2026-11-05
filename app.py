@@ -10,6 +10,7 @@ Alur: Listening → Writing (check) → Speaking
 
 import os
 import json
+import random
 import difflib
 import tempfile
 import base64
@@ -57,8 +58,18 @@ def generate_sentence_with_deepseek(difficulty="easy"):
     }
     target_words = word_counts.get(difficulty, "10")
 
+    # Variasi topic supaya tidak menghasilkan kalimat yang sama
+    topics = [
+        "daily routine", "food and drinks", "travel", "weather",
+        "hobbies", "family", "work or school", "shopping",
+        "health", "technology", "sports", "weekend plans",
+        "movies or music", "friends", "transportation"
+    ]
+    topic = random.choice(topics)
+
     prompt = f"""Generate exactly one English sentence with exactly {target_words} words.
 
+Context/topic: {topic}.
 Requirements:
 - Grammatically correct
 - Natural and common in daily conversation
@@ -454,7 +465,7 @@ def home_page():
         **3️⃣ Speaking**
         - Klik mikrofon di Step 3
         - Ucapkan kalimat
-        - Lihat hasil per kata
+        - Klik Cek Speaking
         """)
 
     st.markdown("---")
@@ -474,14 +485,15 @@ def practice_page():
         "audio_base64": None,
         "difficulty": "easy",
         "listening_checked": False,
-        "listening_result": None,   # {user_text, score, feedback, emoji, word_results}
-        "speaking_result": None,    # {user_text, score, feedback, emoji, word_results}
+        "listening_result": None,
+        "speaking_result": None,
+        "speaking_checked": False,   # penanda speaking sudah diproses
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
-    # ===== STEP 1: PILIH TINGKAT & GENERATE =====
+    # ===== STEP 1 =====
     st.subheader("📝 Step 1: Pilih Tingkat Kesulitan")
 
     col1, col2, col3 = st.columns([2, 1, 1])
@@ -495,9 +507,8 @@ def practice_page():
                 "Moderate (15 kata)",
                 "Difficult (20 kata)",
             ],
-            index=1,  # default ke Easy
+            index=1,
             horizontal=True,
-            key="difficulty_radio",
         )
         diff_map = {
             "Very Easy (2-4 kata)": "very_easy",
@@ -530,10 +541,14 @@ def practice_page():
                     st.session_state.sentence = sentence
                     st.session_state.audio_base64 = text_to_audio_base64(sentence)
                     st.session_state.difficulty = difficulty_key
-                    # Reset hasil tahap berikutnya
                     st.session_state.listening_checked = False
                     st.session_state.listening_result = None
                     st.session_state.speaking_result = None
+                    st.session_state.speaking_checked = False
+                    # Hapus widget input agar bersih
+                    for k in ["listening_input", "speaking_audio"]:
+                        if k in st.session_state:
+                            del st.session_state[k]
                     st.success("✅ Kalimat siap! Silakan dengarkan audio di bawah.")
                     st.rerun()
                 else:
@@ -541,15 +556,13 @@ def practice_page():
 
     st.markdown("---")
 
-    # ===== JIKA BELUM ADA KALIMAT =====
     if not st.session_state.sentence:
         st.info("👆 Silakan generate kalimat terlebih dahulu di Step 1.")
         return
 
-    # ===== STEP 2: LISTENING + WRITING =====
+    # ===== STEP 2: LISTENING =====
     st.subheader("🎧 Step 2: Dengarkan & Tulis")
 
-    # Audio contoh (kalimat TIDAK ditampilkan)
     if st.session_state.audio_base64:
         audio_html = f'''
         <div style="margin: 15px 0;">
@@ -562,7 +575,6 @@ def practice_page():
         st.markdown(audio_html, unsafe_allow_html=True)
 
     st.markdown("**✍️ Tulis kalimat yang Anda dengar:**")
-
     user_written = st.text_input(
         "Ketik hasil listening Anda:",
         key="listening_input",
@@ -571,14 +583,13 @@ def practice_page():
         disabled=st.session_state.listening_checked,
     )
 
-    col_btn1, col_btn2 = st.columns([1, 3])
-    with col_btn1:
-        check_btn = st.button(
-            "✅ Cek Jawaban",
-            use_container_width=True,
-            type="primary",
-            disabled=st.session_state.listening_checked or not user_written.strip(),
-        )
+    check_btn = st.button(
+        "✅ Cek Jawaban",
+        use_container_width=True,
+        type="primary",
+        disabled=st.session_state.listening_checked or not user_written.strip(),
+        key="check_listening",
+    )
     if check_btn:
         word_results, score, feedback, emoji = evaluate_word_by_word(
             st.session_state.sentence, user_written
@@ -603,8 +614,6 @@ def practice_page():
     # ===== HASIL LISTENING =====
     if st.session_state.listening_checked and st.session_state.listening_result:
         res = st.session_state.listening_result
-
-        # Tampilkan kalimat asli SETELAH dicek
         st.markdown(f"""
         <div class="sentence-box">
             <p style="margin: 0; color: #666; font-size: 0.9rem;">Kalimat asli:</p>
@@ -638,7 +647,6 @@ def practice_page():
             </div>
             """, unsafe_allow_html=True)
 
-        # Analisis kata per kata
         st.markdown("### 📝 Analisis Kata per Kata (Listening)")
         word_results = res["word_results"]
         if word_results:
@@ -649,69 +657,67 @@ def practice_page():
                     if word["correct"]:
                         sim_display = "100" if word["similarity"] >= 100 else f"{word['similarity']:.0f}"
                         st.markdown(f"""
-                        <div class="word-box word-correct">
-                            ✅ {word["original"]}
-                            <br><small style="font-size: 0.65rem; opacity: 0.7;">({sim_display}%)</small>
-                        </div>
+                        <div class="word-box word-correct">✅ {word["original"]}
+                        <br><small style="font-size: 0.65rem; opacity: 0.7;">({sim_display}%)</small></div>
                         """, unsafe_allow_html=True)
                     elif word["user"] == "[tidak diucapkan]":
                         st.markdown(f"""
-                        <div class="word-box word-missing">
-                            ❌ {word["original"]}
-                            <br><small style="font-size: 0.65rem; opacity: 0.7;">(0%)</small>
-                        </div>
+                        <div class="word-box word-missing">❌ {word["original"]}
+                        <br><small style="font-size: 0.65rem; opacity: 0.7;">(0%)</small></div>
                         """, unsafe_allow_html=True)
                     else:
                         sim_display = "100" if word["similarity"] >= 100 else f"{word['similarity']:.0f}"
                         st.markdown(f"""
-                        <div class="word-box word-incorrect">
-                            ⚠️ {word["original"]}
-                            <br><small style="font-size: 0.65rem; opacity: 0.7;">({sim_display}%)</small>
-                        </div>
+                        <div class="word-box word-incorrect">⚠️ {word["original"]}
+                        <br><small style="font-size: 0.65rem; opacity: 0.7;">({sim_display}%)</small></div>
                         """, unsafe_allow_html=True)
 
         st.markdown("---")
 
-        # ===== STEP 3: SPEAKING (baru muncul setelah listening checked) =====
+        # ===== STEP 3: SPEAKING (direkam dulu, diproses lewat tombol) =====
         st.subheader("🎤 Step 3: Latihan Speaking")
-        st.info("📌 Klik tombol mikrofon di bawah, ucapkan kalimat sesuai audio contoh, lalu klik **Stop**.")
+        st.info("📌 Klik mikrofon, ucapkan kalimat, lalu klik **Cek Speaking** untuk menilai.")
 
         audio_value = st.audio_input("Rekam suara Anda di sini", key="speaking_audio")
 
         if audio_value is not None:
             st.audio(audio_value, format="audio/wav")
-            with st.spinner("🔄 Memproses suara..."):
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
-                    tmp.write(audio_value.getbuffer())
-                    tmp_path = tmp.name
 
-                user_text = audio_to_text(tmp_path)
+            # Tombol Cek Speaking — hanya muncul jika ada rekaman
+            if st.button("🔍 Cek Speaking", use_container_width=True, type="primary", key="check_speaking"):
+                with st.spinner("🔄 Memproses suara..."):
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
+                        tmp.write(audio_value.getbuffer())
+                        tmp_path = tmp.name
 
-                word_results_sp, score_sp, feedback_sp, emoji_sp = evaluate_word_by_word(
-                    st.session_state.sentence, user_text
-                )
-                st.session_state.speaking_result = {
-                    "user_text": user_text,
-                    "score": score_sp,
-                    "feedback": feedback_sp,
-                    "emoji": emoji_sp,
-                    "word_results": word_results_sp,
-                }
-                save_history(
-                    st.session_state.sentence,
-                    user_text,
-                    score_sp,
-                    f"[SPEAKING] {feedback_sp}",
-                    word_results_sp,
-                )
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
-                st.rerun()
+                    user_text = audio_to_text(tmp_path)
+
+                    word_results_sp, score_sp, feedback_sp, emoji_sp = evaluate_word_by_word(
+                        st.session_state.sentence, user_text
+                    )
+                    st.session_state.speaking_result = {
+                        "user_text": user_text,
+                        "score": score_sp,
+                        "feedback": feedback_sp,
+                        "emoji": emoji_sp,
+                        "word_results": word_results_sp,
+                    }
+                    st.session_state.speaking_checked = True
+                    save_history(
+                        st.session_state.sentence,
+                        user_text,
+                        score_sp,
+                        f"[SPEAKING] {feedback_sp}",
+                        word_results_sp,
+                    )
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+                    st.rerun()
 
         # ===== HASIL SPEAKING =====
-        if st.session_state.speaking_result:
+        if st.session_state.speaking_checked and st.session_state.speaking_result:
             res_sp = st.session_state.speaking_result
             st.markdown("### 📊 Hasil Speaking")
             col1, col2 = st.columns([1, 2])
@@ -736,7 +742,6 @@ def practice_page():
                 </div>
                 """, unsafe_allow_html=True)
 
-            # Analisis per kata speaking
             st.markdown("**Analisis kata per kata (Speaking):**")
             wr_sp = res_sp["word_results"]
             if wr_sp:
@@ -747,25 +752,19 @@ def practice_page():
                         if word["correct"]:
                             sim_display = "100" if word["similarity"] >= 100 else f"{word['similarity']:.0f}"
                             st.markdown(f"""
-                            <div class="word-box word-correct">
-                                ✅ {word["original"]}
-                                <br><small style="font-size: 0.65rem; opacity: 0.7;">({sim_display}%)</small>
-                            </div>
+                            <div class="word-box word-correct">✅ {word["original"]}
+                            <br><small style="font-size: 0.65rem; opacity: 0.7;">({sim_display}%)</small></div>
                             """, unsafe_allow_html=True)
                         elif word["user"] == "[tidak diucapkan]":
                             st.markdown(f"""
-                            <div class="word-box word-missing">
-                                ❌ {word["original"]}
-                                <br><small style="font-size: 0.65rem; opacity: 0.7;">(0%)</small>
-                            </div>
+                            <div class="word-box word-missing">❌ {word["original"]}
+                            <br><small style="font-size: 0.65rem; opacity: 0.7;">(0%)</small></div>
                             """, unsafe_allow_html=True)
                         else:
                             sim_display = "100" if word["similarity"] >= 100 else f"{word['similarity']:.0f}"
                             st.markdown(f"""
-                            <div class="word-box word-incorrect">
-                                ⚠️ {word["original"]}
-                                <br><small style="font-size: 0.65rem; opacity: 0.7;">({sim_display}%)</small>
-                            </div>
+                            <div class="word-box word-incorrect">⚠️ {word["original"]}
+                            <br><small style="font-size: 0.65rem; opacity: 0.7;">({sim_display}%)</small></div>
                             """, unsafe_allow_html=True)
 
         st.markdown("---")
@@ -773,12 +772,10 @@ def practice_page():
         # ===== TOMBOL LATIHAN LAGI =====
         st.subheader("🔁 Selesai Satu Siklus")
         if st.button("🔄 Latihan Lagi dengan Kalimat Baru", use_container_width=True, type="primary"):
-            st.session_state.sentence = None
-            st.session_state.audio_base64 = None
-            st.session_state.listening_checked = False
-            st.session_state.listening_result = None
-            st.session_state.speaking_result = None
-            # Hapus key widget input agar tidak carry-over
+            for k in ["sentence", "audio_base64", "listening_checked", "listening_result",
+                      "speaking_result", "speaking_checked"]:
+                st.session_state[k] = None if k in ("sentence", "audio_base64",
+                                                    "listening_result", "speaking_result") else False
             for k in ["listening_input", "speaking_audio"]:
                 if k in st.session_state:
                     del st.session_state[k]
@@ -854,10 +851,10 @@ def about_page():
     Aplikasi latihan listening & speaking bahasa Inggris berbasis **Streamlit** dengan **DeepSeek AI**.
 
     #### ✨ Fitur:
-    - 🤖 **AI-Powered** - Generate kalimat random dengan DeepSeek API
+    - 🤖 **AI-Powered** - Generate kalimat random dengan DeepSeek API (dengan variasi topik)
     - 🎯 **4 Tingkat Kesulitan** - Very Easy (2-4 kata), Easy (10 kata), Moderate (15 kata), Difficult (20 kata)
     - 🎧 **Listening Practice** - Dengarkan audio, tulis apa yang didengar, dapatkan skor
-    - 🎤 **Speaking Practice** - Rekam suara, cocokkan dengan kalimat asli
+    - 🎤 **Speaking Practice** - Rekam suara, klik Cek Speaking, cocokkan dengan kalimat asli
     - 📝 **Analisis Per Kata** - Evaluasi setiap kata dengan warna (✅ ⚠️ ❌)
     - ⭐ **Penilaian Otomatis** - Skor dan feedback detail untuk listening & speaking
     - 💾 **Riwayat Tersimpan** - Data tetap ada walau refresh
