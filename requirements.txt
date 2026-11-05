@@ -1,0 +1,5 @@
+streamlit
+gTTS
+SpeechRecognition
+requests
+python-dotenv
